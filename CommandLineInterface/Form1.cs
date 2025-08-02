@@ -141,6 +141,15 @@ namespace CommandLineInterface
                 process.BeginErrorReadLine();
 
                 await Task.Run(process.WaitForExit);
+
+                if (Command.ToLower() == "help")
+                {
+                    AppendColoredText("\n NPC Terminal", Color.MediumSpringGreen);
+                    AppendColoredText(" custom commands:\n", Color.White);
+                    AppendColoredText(" ABOUT          Information About NPC Terminal and its features.\n", Color.White);
+                    AppendColoredText(" CODE           Where can you find the code of the Terminal.\n", Color.White);
+                    AppendColoredText(" VERSION        Current program version.\n\n", Color.White);
+                }
             }
 
             catch (Exception ex)
@@ -189,7 +198,7 @@ namespace CommandLineInterface
                 string Command = GetCurrentCommand();
                 AppendColoredText(Environment.NewLine, Color.White);
 
-                if (Command.ToLower() == "clear")
+                if (Command.ToLower() == "clear" || Command.ToLower() == "c")
                 {
                     richTextBox1.Clear();
                     AppendPrompt();
