@@ -82,9 +82,13 @@ namespace CommandLineInterface
 
             if (Parts.Length > 0 && Parts[0].ToLower() == "cd")
             {
-                string NewDirectory = Parts.Length == 1
-                    ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
-                    : Parts[1];
+                string NewDirectory;
+
+                NewDirectory = Parts[1];
+                if (Parts.Length == 1)
+                {
+                    NewDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                }
 
                 try
                 {
