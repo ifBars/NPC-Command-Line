@@ -1,7 +1,7 @@
+using CommandLineInterface.Properties;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
-using System.Windows.Forms;
 
 namespace CommandLineInterface
 {
@@ -9,6 +9,10 @@ namespace CommandLineInterface
     {
         int PromptStartIndex = 0;
         string CurrentDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        Dictionary<string, string> CommandAliases = new();
+        string AliasFilePath = Path.Combine(Application.StartupPath, "aliases.txt");
+        public static Form1 Instance;
 
         //Dark mode stuff
         enum DwmWindowAttribute : uint
@@ -27,6 +31,8 @@ namespace CommandLineInterface
         {
             InitializeComponent();
 
+            Instance = this;
+            LoadAliasesFromFile();
             CustomCommands.Append = AppendColoredText; //Pass the text appending function to the custom command system.
 
             AppendPrompt();
@@ -36,7 +42,8 @@ namespace CommandLineInterface
         private void ThemeAllControls(Control parent = null) //Dark mode from: stackoverflow.com/questions/72988434/how-to-make-winform-use-the-system-dark-mode-theme
         {
             parent ??= this;
-            Action<Control> Theme = control => {
+            Action<Control> Theme = control =>
+            {
                 int trueValue = 0x01;
                 SetWindowTheme(control.Handle, "DarkMode_Explorer", null);
                 DwmSetWindowAttribute(control.Handle, DwmWindowAttribute.DWMWA_USE_IMMERSIVE_DARK_MODE, ref trueValue, Marshal.SizeOf(typeof(int)));
@@ -63,6 +70,15 @@ namespace CommandLineInterface
         private async void ExecuteCommand(string Command)
         {
             string[] Parts = Command.Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+
+            if (CommandAliases.TryGetValue(Parts[0], out var mapped))
+            {
+                Command = mapped;
+                if (Parts.Length > 1)
+                {
+                    Command = mapped + " " + Parts[1];
+                }
+            }
 
             if (Parts.Length > 0 && Parts[0].ToLower() == "cd")
             {
@@ -147,7 +163,7 @@ namespace CommandLineInterface
                     AppendColoredText("\n NPC Terminal", Color.MediumSpringGreen);
                     AppendColoredText(" custom commands:\n", Color.White);
                     AppendColoredText(" ABOUT          Information About NPC Terminal and its features.\n", Color.White);
-                    AppendColoredText(" CODE           Where can you find the code of the Terminal.\n", Color.White);
+                    AppendColoredText(" CODE, GITHUB   Where can you find the code of the Terminal.\n", Color.White);
                     AppendColoredText(" VERSION        Current program version.\n\n", Color.White);
                 }
             }
@@ -206,6 +222,34 @@ namespace CommandLineInterface
                 }
 
                 ExecuteCommand(Command);
+            }
+        }
+
+        private void Form1_Load(object sender, EventArgs e)
+        {
+            this.Text = "NPC Terminal v." + Settings.Default.Version;
+        }
+
+        public void LoadAliasesFromFile()
+        {
+            CommandAliases.Clear();
+
+            if (!File.Exists(AliasFilePath))
+            {
+                File.WriteAllText(AliasFilePath, "gcm\ngit commit -m"); //Create the text file with an example command
+            }
+
+            string[] Lines = File.ReadAllLines(AliasFilePath).Where(line => !string.IsNullOrWhiteSpace(line)).ToArray();
+
+            for (int i = 0; i < Lines.Length - 1; i += 2)
+            {
+                string Alias = Lines[i].Trim();
+                string Command = Lines[i + 1].Trim();
+
+                if (!CommandAliases.ContainsKey(Alias))
+                {
+                    CommandAliases.Add(Alias, Command);
+                }
             }
         }
     }

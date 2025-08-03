@@ -1,9 +1,5 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using CommandLineInterface.Properties;
+﻿using CommandLineInterface.Properties;
+using System.Diagnostics;
 
 namespace CommandLineInterface
 {
@@ -17,15 +13,15 @@ namespace CommandLineInterface
             { "version", Version },
             { "code", Code },
             { "github", Code },
+            { "alias", CreateAlias },
+            { "createalias", CreateAlias },
         };
-
 
         public static void About(string arguments)
         {
             Append(" Welcome to ", Color.White);
             Append("NPC Terminal", Color.MediumSpringGreen);
             Append($" v.{Settings.Default.Version}!\n", Color.White);
-
             Append(" NPC Terminal is a clone of Windows Terminal but better. With Quality of Life features, better design, and more.\n Supports adding custom commands. Made by youtube.com/@CsharpProgramming\n", Color.White);
         }
 
@@ -39,6 +35,24 @@ namespace CommandLineInterface
         {
             Append(" NPC Terminal", Color.MediumSpringGreen);
             Append(" code available at github.com/CsharpProgramming/NPC-Command-Line\n", Color.White);
+        }
+
+        public static void CreateAlias(string arguments)
+        {
+            try
+            {
+                var notepad = new Process();
+                notepad.StartInfo = new ProcessStartInfo("notepad.exe", Path.Combine(Application.StartupPath, "aliases.txt"));
+                notepad.EnableRaisingEvents = true;
+                notepad.Exited += (s, e) => { Form1.Instance.Invoke(() => { Form1.Instance.LoadAliasesFromFile(); }); };
+                notepad.Start();
+            }
+
+            catch (Exception e)
+            {
+                Append(" Error opening the alias file. Please report it:\n", Color.Yellow);
+                Append($" Error: {e}", Color.Yellow);
+            }
         }
     }
 }
