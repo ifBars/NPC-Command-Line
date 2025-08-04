@@ -70,71 +70,87 @@ namespace CommandLineInterface
 
         private async void ExecuteCommand(string Command)
         {
+            //Resources used:
+            //powershellcommands.com/execute-powershell-script-from-c
+            //stackoverflow.com/questions/1469764/run-command-prompt-commands
+            //foxlearn.com/csharp/how-to-run-commands-in-command-prompt-using-csharp-8394.html
+            //Other small stuff and around 20% of the code from Claude Sonnet 4.
+
             Stopwatch stopwatch = new();
             stopwatch.Start();
 
             string[] Parts = Command.Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
 
-            if (Parts.Length > 0 && CommandAliases.TryGetValue(Parts[0], out var mapped))
+            if (Parts.Length > 0)
             {
-                Command = mapped;
-                if (Parts.Length > 1)
+                if (Parts.Length > 0 && CommandAliases.TryGetValue(Parts[0], out var mapped))
                 {
-                    Command += " " + Parts[1];
-                }
-            }
-
-            if (Parts.Length > 0 && Parts[0].ToLower() == "cd")
-            {
-                string NewDirectory = Parts.Length == 1
-                    ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
-                    : Parts[1];
-
-                try
-                {
-                    string Combined = Path.IsPathRooted(NewDirectory)
-                        ? NewDirectory
-                        : Path.Combine(CurrentDirectory, NewDirectory);
-
-                    string FullPath = Path.GetFullPath(Combined);
-
-                    if (Directory.Exists(FullPath))
+                    Command = mapped;
+                    if (Parts.Length > 1)
                     {
-                        CurrentDirectory = FullPath;
+                        Command += " " + Parts[1];
+                    }
+                }
+
+                if (Parts.Length > 0 && Parts[0].ToLower() == "cd") //If change directory command runs update the directory displayed in the Prompt.
+                {
+                    string NewDirectory;
+                    if (Parts.Length == 1)
+                    {
+                        NewDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                     }
 
                     else
                     {
-                        AppendColoredText(" The specified path can not be found.\n", Color.Yellow);
+                        NewDirectory = Parts[1];
                     }
+
+                    try
+                    {
+                        string Combined = Path.IsPathRooted(NewDirectory)
+                            ? NewDirectory
+                            : Path.Combine(CurrentDirectory, NewDirectory);
+
+                        string FullPath = Path.GetFullPath(Combined);
+
+                        if (Directory.Exists(FullPath))
+                        {
+                            CurrentDirectory = FullPath;
+                        }
+
+                        else
+                        {
+                            AppendColoredText(" The specified path can not be found.\n", Color.Yellow);
+                        }
+                    }
+
+                    catch (Exception ex)
+                    {
+                        AppendColoredText(" Error: " + ex.Message + "\n", Color.Red);
+                    }
+
+                    AppendPrompt();
+                    return;
                 }
 
-                catch (Exception ex)
+                if (Parts.Length > 0 && Parts[0].ToLower() == "mode") //Run switch mode command.
                 {
-                    AppendColoredText(" Error: " + ex.Message + "\n", Color.Red);
+                    if (CurrentMode == "cmd")
+                    {
+                        CurrentMode = "powershell";
+                    }
+
+                    else
+                    {
+                        CurrentMode = "cmd";
+                    }
+
+                    richTextBox1.Clear();
+                    AppendColoredText(" NPC", Color.MediumSpringGreen);
+                    AppendColoredText($" Switched to {CurrentMode.ToUpper()} mode.\n", Color.Gray);
+                    AppendPrompt();
+                    return;
                 }
-
-                AppendPrompt();
-                return;
-            }
-
-            if (Parts.Length > 0 && Parts[0].ToLower() == "mode")
-            {
-                if (CurrentMode == "cmd")
-                {
-                    CurrentMode = "powershell";
-                }
-
-                else
-                {
-                    CurrentMode = "cmd";
-                }
-
-                richTextBox1.Clear();
-                AppendColoredText(" NPC", Color.MediumSpringGreen);
-                AppendColoredText($" Switched to {CurrentMode.ToUpper()} mode.\n", Color.Gray);
-                AppendPrompt();
-                return;
             }
 
             if (CustomCommands.Commands.TryGetValue(Command, out var action))
