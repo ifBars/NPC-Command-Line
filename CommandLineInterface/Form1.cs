@@ -69,6 +69,9 @@ namespace CommandLineInterface
 
         private async void ExecuteCommand(string Command)
         {
+            Stopwatch stopwatch = new Stopwatch();
+            stopwatch.Start();
+
             string[] Parts = Command.Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
 
             if (CommandAliases.TryGetValue(Parts[0], out var mapped))
@@ -176,6 +179,10 @@ namespace CommandLineInterface
             {
                 AppendColoredText(" Error: " + ex.Message + "\n", Color.Red);
             }
+
+            stopwatch.Stop();
+            AppendColoredText($" NPC", Color.MediumSpringGreen);
+            AppendColoredText($" Command completed in {stopwatch.ElapsedMilliseconds}ms\n", Color.Gray);
 
             AppendPrompt();
         }
