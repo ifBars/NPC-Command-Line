@@ -9,6 +9,7 @@ namespace CommandLineInterface
     {
         int PromptStartIndex = 0;
         string CurrentDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string CurrentMode = "cmd"; 
 
         Dictionary<string, string> CommandAliases = new();
         string AliasFilePath = Path.Combine(Application.StartupPath, "aliases.txt");
@@ -69,33 +70,30 @@ namespace CommandLineInterface
 
         private async void ExecuteCommand(string Command)
         {
-            Stopwatch stopwatch = new Stopwatch();
+            Stopwatch stopwatch = new();
             stopwatch.Start();
 
             string[] Parts = Command.Trim().Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
 
-            if (CommandAliases.TryGetValue(Parts[0], out var mapped))
+            if (Parts.Length > 0 && CommandAliases.TryGetValue(Parts[0], out var mapped))
             {
                 Command = mapped;
                 if (Parts.Length > 1)
                 {
-                    Command = mapped + " " + Parts[1];
+                    Command += " " + Parts[1];
                 }
             }
 
             if (Parts.Length > 0 && Parts[0].ToLower() == "cd")
             {
-                string NewDirectory;
-
-                NewDirectory = Parts[1];
-                if (Parts.Length == 1)
-                {
-                    NewDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                }
+                string NewDirectory = Parts.Length == 1
+                    ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+                    : Parts[1];
 
                 try
                 {
-                    string Combined = Path.IsPathRooted(NewDirectory) ? NewDirectory
+                    string Combined = Path.IsPathRooted(NewDirectory)
+                        ? NewDirectory
                         : Path.Combine(CurrentDirectory, NewDirectory);
 
                     string FullPath = Path.GetFullPath(Combined);
@@ -120,6 +118,25 @@ namespace CommandLineInterface
                 return;
             }
 
+            if (Parts.Length > 0 && Parts[0].ToLower() == "mode")
+            {
+                if (CurrentMode == "cmd")
+                {
+                    CurrentMode = "powershell";
+                }
+
+                else
+                {
+                    CurrentMode = "cmd";
+                }
+
+                richTextBox1.Clear();
+                AppendColoredText(" NPC", Color.MediumSpringGreen);
+                AppendColoredText($" Switched to {CurrentMode.ToUpper()} mode.\n", Color.Gray);
+                AppendPrompt();
+                return;
+            }
+
             if (CustomCommands.Commands.TryGetValue(Command, out var action))
             {
                 action.Invoke(CurrentDirectory);
@@ -129,7 +146,21 @@ namespace CommandLineInterface
 
             try
             {
-                var psi = new ProcessStartInfo("cmd.exe", "/c " + Command)
+                string Executable;
+                Executable = "cmd.exe";
+                if (CurrentMode == "powershell")
+                {
+                    Executable = "powershell.exe";
+                }
+
+                string Arguments;
+                Arguments = $"/c {Command}";
+                if (CurrentMode == "powershell")
+                {
+                    Arguments = $"-Command \"{Command}\"";
+                }
+
+                var psi = new ProcessStartInfo(Executable, Arguments)
                 {
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -140,14 +171,11 @@ namespace CommandLineInterface
 
                 var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
-                StringBuilder outputBuilder = new();
-                StringBuilder errorBuilder = new();
-
                 process.OutputDataReceived += (s, e) =>
                 {
                     if (e.Data != null)
                     {
-                        this.Invoke(() => AppendColoredText($" {e.Data}\n", Color.LightGray));
+                        Invoke(() => AppendColoredText($" {e.Data}\n", Color.LightGray));
                     }
                 };
 
@@ -155,7 +183,7 @@ namespace CommandLineInterface
                 {
                     if (e.Data != null)
                     {
-                        this.Invoke(() => AppendColoredText($" {e.Data}\n", Color.Red));
+                        Invoke(() => AppendColoredText($" {e.Data}\n", Color.Red));
                     }
                 };
 
@@ -171,7 +199,8 @@ namespace CommandLineInterface
                     AppendColoredText(" custom commands:\n", Color.White);
                     AppendColoredText(" ABOUT          Information About NPC Terminal and its features.\n", Color.White);
                     AppendColoredText(" CODE, GITHUB   Where can you find the code of the Terminal.\n", Color.White);
-                    AppendColoredText(" VERSION        Current program version.\n\n", Color.White);
+                    AppendColoredText(" VERSION        Current program version.\n", Color.White);
+                    AppendColoredText(" MODE           Toggle CMD/PowerShell mode.\n", Color.White);
                 }
             }
 
@@ -183,7 +212,6 @@ namespace CommandLineInterface
             stopwatch.Stop();
             AppendColoredText($" NPC", Color.MediumSpringGreen);
             AppendColoredText($" Command completed in {stopwatch.ElapsedMilliseconds}ms\n", Color.Gray);
-
             AppendPrompt();
         }
 
