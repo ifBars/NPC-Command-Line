@@ -1,4 +1,4 @@
-using CommandLineInterface.Properties;
+using NPC_Terminal.Properties;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
