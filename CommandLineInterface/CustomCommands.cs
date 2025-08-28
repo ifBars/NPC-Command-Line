@@ -1,4 +1,4 @@
-﻿using CommandLineInterface.Properties;
+﻿using NPC_Terminal.Properties;
 using System.Diagnostics;
 
 namespace CommandLineInterface
