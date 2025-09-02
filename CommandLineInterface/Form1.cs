@@ -14,6 +14,7 @@ namespace CommandLineInterface
         Dictionary<string, string> CommandAliases = new();
         string AliasFilePath = Path.Combine(Application.StartupPath, "aliases.txt");
         public static Form1 Instance;
+        Color RegularTextColor = Color.White;
 
         //Dark mode stuff
         enum DwmWindowAttribute : uint
@@ -36,8 +37,61 @@ namespace CommandLineInterface
             LoadAliasesFromFile();
             CustomCommands.Append = AppendColoredText; //Pass the text appending function to the custom command system.
 
-            AppendPrompt();
-            ThemeAllControls();
+            ThemeUI();
+        }
+
+        private void ThemeUI()
+        {
+            if (Settings.Default.DarkMode == true)
+            {
+                this.BackColor = Color.FromArgb(45, 45, 48);
+                ThemeAllControls();
+                richTextBox1.BackColor = Color.FromArgb(30, 30, 30);
+                RegularTextColor = Color.White;
+                richTextBox1.ForeColor = Color.White;
+                richTextBox1.Clear();
+                AppendPrompt();
+                return;
+            }
+            else
+            {
+                this.BackColor = SystemColors.Control;
+                ResetControlsToLightTheme();
+                richTextBox1.BackColor = Color.White;
+                RegularTextColor = Color.Black;
+                richTextBox1.ForeColor = Color.Black;
+                richTextBox1.Clear();
+                AppendPrompt();
+                return;
+            }
+        }
+
+        private void ResetControlsToLightTheme(Control parent = null)
+        {
+            parent ??= this;
+
+            Action<Control> ResetTheme = control =>
+            {
+                SetWindowTheme(control.Handle, "", "");
+
+                int falseValue = 0x00;
+                DwmSetWindowAttribute(control.Handle, DwmWindowAttribute.DWMWA_USE_IMMERSIVE_DARK_MODE, ref falseValue, Marshal.SizeOf(typeof(int)));
+            };
+
+            if (parent == this) ResetTheme(this);
+
+            foreach (Control control in parent.Controls)
+            {
+                if (control != richTextBox1)
+                {
+                    ResetTheme(control);
+                }
+
+                if (control.Controls.Count != 0)
+                {
+                    ResetControlsToLightTheme(control);
+                }
+            }
         }
 
         private void ThemeAllControls(Control parent = null) //Dark mode from: stackoverflow.com/questions/72988434/how-to-make-winform-use-the-system-dark-mode-theme
@@ -151,6 +205,14 @@ namespace CommandLineInterface
                     AppendPrompt();
                     return;
                 }
+
+                if (Parts.Length > 0 && Parts[0].ToLower() == "theme")
+                {
+                    Settings.Default.DarkMode = !Settings.Default.DarkMode;
+                    Settings.Default.Save();
+                    ThemeUI();
+                    return;
+                }
             }
 
             if (CustomCommands.Commands.TryGetValue(Command, out var action))
@@ -212,11 +274,11 @@ namespace CommandLineInterface
                 if (Command.ToLower() == "help")
                 {
                     AppendColoredText("\n NPC Terminal", Color.MediumSpringGreen);
-                    AppendColoredText(" custom commands:\n", Color.White);
-                    AppendColoredText(" ABOUT          Information About NPC Terminal and its features.\n", Color.White);
-                    AppendColoredText(" CODE, GITHUB   Where can you find the code of the Terminal.\n", Color.White);
-                    AppendColoredText(" VERSION        Current program version.\n", Color.White);
-                    AppendColoredText(" MODE           Toggle CMD/PowerShell mode.\n", Color.White);
+                    AppendColoredText(" custom commands:\n", RegularTextColor);
+                    AppendColoredText(" ABOUT          Information About NPC Terminal and its features.\n", RegularTextColor);
+                    AppendColoredText(" CODE, GITHUB   Where can you find the code of the Terminal.\n", RegularTextColor);
+                    AppendColoredText(" VERSION        Current program version.\n", RegularTextColor);
+                    AppendColoredText(" MODE           Toggle CMD/PowerShell mode.\n", RegularTextColor);
                 }
             }
 
@@ -267,7 +329,7 @@ namespace CommandLineInterface
             {
                 e.SuppressKeyPress = true;
                 string Command = GetCurrentCommand();
-                AppendColoredText(Environment.NewLine, Color.White);
+                AppendColoredText(Environment.NewLine, RegularTextColor);
 
                 if (Command.ToLower() == "clear" || Command.ToLower() == "c")
                 {
@@ -291,7 +353,7 @@ namespace CommandLineInterface
 
             if (!File.Exists(AliasFilePath))
             {
-                File.WriteAllText(AliasFilePath, "gcm\ngit commit -m"); //Create the text file with an example command
+                File.WriteAllText(AliasFilePath, "gcm\ngit commit -m\n"); //Create the text file with an example command
             }
 
             string[] Lines = File.ReadAllLines(AliasFilePath).Where(line => !string.IsNullOrWhiteSpace(line)).ToArray();
