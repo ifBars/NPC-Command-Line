@@ -10,6 +10,10 @@ namespace CommandLineInterface
         int PromptStartIndex = 0;
         string CurrentDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         string CurrentMode = "cmd"; 
+        List<string> CommandHistory = new();
+        int HistoryIndex = 0;
+        CommandLineInterface.Core.CommandRouter Router = new();
+        CommandLineInterface.Core.TerminalContext? TerminalContext;
 
         Dictionary<string, string> CommandAliases = new();
         string AliasFilePath = Path.Combine(Application.StartupPath, "aliases.txt");
@@ -35,7 +39,28 @@ namespace CommandLineInterface
 
             Instance = this;
             LoadAliasesFromFile();
-            CustomCommands.Append = AppendColoredText; //Pass the text appending function to the custom command system.
+            
+            try
+            {
+                var codexService = new Services.CodexService(new Uri("http://localhost:11434/"), "gpt-oss:20b");
+                TerminalContext = new CommandLineInterface.Core.TerminalContext
+                {
+                    Append = AppendSafe,
+                    GetWorkspaceRoot = GetWorkspaceRoot,
+                    CodexService = codexService,
+                    Form = this
+                };
+                
+                // Register all modern commands
+                CommandLineInterface.Core.CommandFactory.RegisterAllCommands(Router);
+                
+                // Register codex command
+                Router.Register(new CommandLineInterface.Commands.CodexTerminalCommand());
+            }
+            catch
+            {
+                // Silent; command will report if uninitialized
+            }
 
             ThemeUI();
         }
@@ -146,6 +171,16 @@ namespace CommandLineInterface
                     }
                 }
 
+                if (TerminalContext != null)
+                {
+                    var routed = await Router.TryRouteAsync(Command, TerminalContext);
+                    if (routed)
+                    {
+                        AppendPrompt();
+                        return;
+                    }
+                }
+
                 if (Parts.Length > 0 && Parts[0].ToLower() == "cd") //If change directory command runs update the directory displayed in the Prompt.
                 {
                     string NewDirectory;
@@ -215,12 +250,7 @@ namespace CommandLineInterface
                 }
             }
 
-            if (CustomCommands.Commands.TryGetValue(Command, out var action))
-            {
-                action.Invoke(CurrentDirectory);
-                AppendPrompt();
-                return;
-            }
+            // Old CustomCommands system removed - all commands now go through CommandRouter
 
             try
             {
@@ -275,10 +305,26 @@ namespace CommandLineInterface
                 {
                     AppendColoredText("\n NPC Terminal", Color.MediumSpringGreen);
                     AppendColoredText(" custom commands:\n", RegularTextColor);
-                    AppendColoredText(" ABOUT          Information About NPC Terminal and its features.\n", RegularTextColor);
-                    AppendColoredText(" CODE, GITHUB   Where can you find the code of the Terminal.\n", RegularTextColor);
-                    AppendColoredText(" VERSION        Current program version.\n", RegularTextColor);
+                    
+                    // Display commands by category
+                    var categories = CommandLineInterface.Core.CommandFactory.GetCommandsByCategory();
+                    foreach (var category in categories)
+                    {
+                        AppendColoredText($"\n {category.Key.ToUpper()}:\n", Color.Cyan);
+                        foreach (var cmd in category.Value.Take(5)) // Show first 5 commands per category
+                        {
+                            var aliases = cmd is CommandLineInterface.Core.BaseCommand baseCmd && baseCmd.Aliases.Length > 0 
+                                ? $" ({string.Join(", ", baseCmd.Aliases)})" 
+                                : "";
+                            AppendColoredText($" {cmd.Name.ToUpper()}{aliases.ToLower()}  {cmd.Description}\n", RegularTextColor);
+                        }
+                    }
+                    
+                    AppendColoredText("\n BUILT-IN:\n", Color.Cyan);
                     AppendColoredText(" MODE           Toggle CMD/PowerShell mode.\n", RegularTextColor);
+                    AppendColoredText(" THEME          Toggle dark/light theme.\n", RegularTextColor);
+                    AppendColoredText(" CD             Change directory.\n", RegularTextColor);
+                    AppendColoredText(" CLEAR, C       Clear terminal.\n", RegularTextColor);
                 }
             }
 
@@ -301,6 +347,18 @@ namespace CommandLineInterface
             richTextBox1.SelectionColor = richTextBox1.ForeColor;
         }
 
+        private void AppendSafe(string text, Color color)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() => AppendColoredText(text, color)));
+            }
+            else
+            {
+                AppendColoredText(text, color);
+            }
+        }
+
         private string GetCurrentCommand()
         {
             if (richTextBox1.TextLength <= PromptStartIndex)
@@ -311,15 +369,71 @@ namespace CommandLineInterface
             return richTextBox1.Text.Substring(PromptStartIndex).Trim();
         }
 
+        private void SetCurrentCommand(string text)
+        {
+            richTextBox1.SelectionStart = PromptStartIndex;
+            richTextBox1.SelectionLength = richTextBox1.TextLength - PromptStartIndex;
+            richTextBox1.SelectedText = text;
+            richTextBox1.SelectionStart = richTextBox1.TextLength;
+        }
+
+        private string GetWorkspaceRoot()
+        {
+            try
+            {
+                var dir = new DirectoryInfo(Application.StartupPath);
+                for (var current = dir; current != null; current = current.Parent)
+                {
+                    // Prefer solution root
+                    if (current.GetFiles("*.sln").Any()) return current.FullName;
+                    // Or git repo root
+                    if (current.GetDirectories(".git").Any()) return current.FullName;
+                    // Or the project root containing the csproj
+                    if (current.GetFiles("*.csproj").Any()) return current.FullName;
+                }
+                return dir.FullName;
+            }
+            catch
+            {
+                return Application.StartupPath;
+            }
+        }
+
         private void richTextBox1_KeyDown(object sender, KeyEventArgs e)
         {
+            if (e.KeyCode == Keys.Up)
+            {
+                e.SuppressKeyPress = true;
+                if (CommandHistory.Count == 0) return;
+                if (HistoryIndex > 0) HistoryIndex--;
+                SetCurrentCommand(CommandHistory[HistoryIndex]);
+                return;
+            }
+
+            if (e.KeyCode == Keys.Down)
+            {
+                e.SuppressKeyPress = true;
+                if (CommandHistory.Count == 0) return;
+                if (HistoryIndex < CommandHistory.Count - 1)
+                {
+                    HistoryIndex++;
+                    SetCurrentCommand(CommandHistory[HistoryIndex]);
+                }
+                else
+                {
+                    HistoryIndex = CommandHistory.Count;
+                    SetCurrentCommand("");
+                }
+                return;
+            }
+
             if (e.KeyCode == Keys.Back && richTextBox1.SelectionStart <= PromptStartIndex)
             {
                 e.SuppressKeyPress = true;
                 return;
             }
 
-            if ((e.KeyCode == Keys.Left || e.KeyCode == Keys.Up || e.KeyCode == Keys.Home) && richTextBox1.SelectionStart <= PromptStartIndex)
+            if ((e.KeyCode == Keys.Left || e.KeyCode == Keys.Home) && richTextBox1.SelectionStart <= PromptStartIndex)
             {
                 e.SuppressKeyPress = true;
                 return;
@@ -330,6 +444,12 @@ namespace CommandLineInterface
                 e.SuppressKeyPress = true;
                 string Command = GetCurrentCommand();
                 AppendColoredText(Environment.NewLine, RegularTextColor);
+
+                if (!string.IsNullOrWhiteSpace(Command))
+                {
+                    CommandHistory.Add(Command);
+                    HistoryIndex = CommandHistory.Count;
+                }
 
                 if (Command.ToLower() == "clear" || Command.ToLower() == "c")
                 {
