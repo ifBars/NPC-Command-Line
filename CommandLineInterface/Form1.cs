@@ -43,11 +43,14 @@ namespace CommandLineInterface
             try
             {
                 var codexService = new Services.CodexService(new Uri("http://localhost:11434/"), "gpt-oss:20b");
+                var workspaceRoot = GetWorkspaceRoot();
+                var embeddingService = new Services.EmbeddingIndexService(codexService, workspaceRoot);
                 TerminalContext = new CommandLineInterface.Core.TerminalContext
                 {
                     Append = AppendSafe,
                     GetWorkspaceRoot = GetWorkspaceRoot,
                     CodexService = codexService,
+                    EmbeddingIndexService = embeddingService,
                     Form = this
                 };
                 

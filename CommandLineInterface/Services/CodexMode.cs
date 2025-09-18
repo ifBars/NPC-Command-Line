@@ -11,7 +11,7 @@ namespace CommandLineInterface.Services
 
         public async Task EnterAsync(TerminalContext context)
         {
-            session = new CodexSession(context.CodexService, context.Append, context.GetWorkspaceRoot());
+            session = new CodexSession(context.CodexService, context.EmbeddingIndexService, context.Append, context.GetWorkspaceRoot());
             await session.StartAsync();
         }
 

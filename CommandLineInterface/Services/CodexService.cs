@@ -1,4 +1,6 @@
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using OllamaSharp;
 using OllamaSharp.Models;
 
@@ -7,6 +9,7 @@ namespace CommandLineInterface.Services
     public class CodexService
     {
         private readonly OllamaApiClient client;
+        private readonly Uri baseUri;
         private string currentModel;
 
         public string CurrentModel => currentModel;
@@ -15,6 +18,7 @@ namespace CommandLineInterface.Services
         public CodexService(Uri baseUri, string model)
         {
             client = new OllamaApiClient(baseUri);
+            this.baseUri = baseUri;
             currentModel = model;
             client.SelectedModel = model;
         }
@@ -137,6 +141,39 @@ namespace CommandLineInterface.Services
             catch (Exception ex)
             {
                 return $"Error: {ex.Message}";
+            }
+        }
+
+        // Embeddings support via Ollama HTTP API
+        private class EmbeddingsRequest
+        {
+            [JsonPropertyName("model")] public required string Model { get; set; }
+            // Ollama embeddings API accepts "input" for the text to embed
+            [JsonPropertyName("input")] public required string Input { get; set; }
+        }
+
+        private class EmbeddingsResponse
+        {
+            [JsonPropertyName("embedding")] public required float[] Embedding { get; set; }
+        }
+
+        public async Task<float[]?> GetEmbeddingAsync(string text, string model = "embeddinggemma:latest", CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                using var http = new HttpClient { BaseAddress = baseUri };
+                var req = new EmbeddingsRequest { Model = model, Input = text };
+                var json = JsonSerializer.Serialize(req);
+                using var content = new StringContent(json, Encoding.UTF8, "application/json");
+                using var resp = await http.PostAsync("/api/embeddings", content, cancellationToken);
+                resp.EnsureSuccessStatusCode();
+                await using var stream = await resp.Content.ReadAsStreamAsync(cancellationToken);
+                var data = await JsonSerializer.DeserializeAsync<EmbeddingsResponse>(stream, cancellationToken: cancellationToken);
+                return data?.Embedding;
+            }
+            catch
+            {
+                return null;
             }
         }
     }

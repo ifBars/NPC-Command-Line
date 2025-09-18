@@ -6,15 +6,17 @@ namespace CommandLineInterface.Services
     public class CodexSession
     {
         private readonly CodexService codexService;
+        private readonly EmbeddingIndexService embeddingIndex;
         private readonly Action<string, Color> append;
         private readonly List<(string role, string content)> conversation = new List<(string role, string content)>();
 
         public string WorkspaceRoot { get; }
         public bool IsActive { get; private set; }
 
-        public CodexSession(CodexService codexService, Action<string, Color> appendOutput, string workspaceRoot)
+        public CodexSession(CodexService codexService, EmbeddingIndexService embeddingIndex, Action<string, Color> appendOutput, string workspaceRoot)
         {
             this.codexService = codexService;
+            this.embeddingIndex = embeddingIndex;
             append = appendOutput;
             WorkspaceRoot = workspaceRoot;
         }
@@ -34,8 +36,8 @@ namespace CommandLineInterface.Services
             IsActive = true;
             append("\n CODEX ", Color.DeepSkyBlue);
             append($"interactive mode enabled. Current model: {codexService.CurrentModel}\n", Color.White);
-            append(" Commands: /help, /models, /model <name>, /pull <name>, /exit\n", Color.Gray);
-            append(" Tools: ls, open, search (use with function calls)\n\n", Color.Gray);
+            append(" Commands: /help, /models, /model <name>, /pull <name>, /embed <cmd>, /exit\n", Color.Gray);
+            append(" Tools: ls, open, search, vsearch (use with function calls)\n\n", Color.Gray);
 
             // Initialize conversation with system message
             conversation.Clear();
@@ -104,8 +106,8 @@ Keep responses concise and actionable. Show code examples when helpful."));
             var promptBuilder = new StringBuilder();
             promptBuilder.AppendLine("System: You are Codex, a helpful C# coding assistant working in a terminal environment.");
             promptBuilder.AppendLine("System: You have access to workspace tools through function calls. When a user asks about files or code, emit JSON function calls as needed.");
-            promptBuilder.AppendLine("System: Available tools => list_files(path) | read_file(path, max_lines) | search_workspace(query, max_results)");
-            promptBuilder.AppendLine("System: Use JSON like {\"function\":\"read_file\",\"arguments\":{\"path\":\"Form1.cs\",\"max_lines\":50}} when calling tools.");
+            promptBuilder.AppendLine("System: Available tools => list_files(path) | read_file(path, max_lines) | search_workspace(query, max_results) | vector_search(query, top_k)");
+            promptBuilder.AppendLine("System: Use JSON like {\"function\":\"read_file\",\"arguments\":{\"path\":\"Form1.cs\",\"max_lines\":50}} when calling tools. For semantic search: {\"function\":\"vector_search\",\"arguments\":{\"query\":\"http handler\",\"top_k\":8}}");
             promptBuilder.AppendLine();
             promptBuilder.AppendLine($"User: {input}");
             promptBuilder.Append("Assistant:");
@@ -151,6 +153,10 @@ Keep responses concise and actionable. Show code examples when helpful."));
                     append("  /models              List available models\n", Color.Gray);
                     append("  /model <name>        Switch to a different model\n", Color.Gray);
                     append("  /pull <name>         Download a new model\n", Color.Gray);
+                    append("  /embed build         Build semantic index with embeddinggemma\n", Color.Gray);
+                    append("  /embed search <q>    Search semantic index (top 8)\n", Color.Gray);
+                    append("  /embed stats         Show index info\n", Color.Gray);
+                    append("  /embed clear         Remove index\n", Color.Gray);
                     append("  /exit                Exit codex mode\n", Color.Gray);
                     append("\n Ask me to use workspace tools like 'list files' or 'show Form1.cs'\n", Color.LightBlue);
                     return;
@@ -177,8 +183,60 @@ Keep responses concise and actionable. Show code examples when helpful."));
                         append(" Usage: /pull <model-name>\n", Color.Yellow);
                     return;
 
+                case "/embed":
+                    await HandleEmbedCommandAsync(parts.Skip(1).ToList(), cancellationToken);
+                    return;
+
                 default:
                     append(" Unknown command. Use /help.\n", Color.Yellow);
+                    return;
+            }
+        }
+
+        private async Task HandleEmbedCommandAsync(List<string> args, CancellationToken cancellationToken)
+        {
+            if (args.Count == 0)
+            {
+                append(" Usage: /embed <build|search|stats|clear> [args]\n", Color.Yellow);
+                return;
+            }
+            var sub = args[0].ToLowerInvariant();
+            switch (sub)
+            {
+                case "build":
+                    append(" [index] building semantic index with embeddinggemma:latest...\n", Color.Cyan);
+                    append(" Tip: If this fails, run /pull embeddinggemma:latest first.\n", Color.Gray);
+                    using (var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+                    {
+                        await embeddingIndex.BuildIndexAsync(append, cts.Token);
+                    }
+                    return;
+                case "search":
+                    if (args.Count < 2)
+                    {
+                        append(" Usage: /embed search <query> [--k N]\n", Color.Yellow);
+                        return;
+                    }
+                    int topK = 8;
+                    for (int i = 2; i < args.Count - 1; i++)
+                    {
+                        if (args[i] == "--k" && int.TryParse(args[i + 1], out var k))
+                        {
+                            topK = Math.Clamp(k, 1, 50);
+                        }
+                    }
+                    await RunVectorSearchAsync(string.Join(" ", args.Skip(1)), topK, cancellationToken);
+                    return;
+                case "stats":
+                    var (chunks, bytes) = embeddingIndex.Stats();
+                    append($" [index] chunks: {chunks}, size: {bytes} bytes\n", Color.LightGray);
+                    return;
+                case "clear":
+                    embeddingIndex.Clear();
+                    append(" [index] cleared\n", Color.LightGreen);
+                    return;
+                default:
+                    append(" Usage: /embed <build|search|stats|clear> [args]\n", Color.Yellow);
                     return;
             }
         }
@@ -300,6 +358,20 @@ Keep responses concise and actionable. Show code examples when helpful."));
                 return true;
             }
 
+            // vsearch <text> [--k N]
+            var vsearch = Regex.Match(input, "^vsearch\\s+(?<q>.+?)(?:\\s+--k\\s+(?<k>\\d+))?$", RegexOptions.IgnoreCase);
+            if (vsearch.Success)
+            {
+                var query = vsearch.Groups["q"].Value;
+                int topK = 8;
+                if (vsearch.Groups["k"].Success && int.TryParse(vsearch.Groups["k"].Value, out var k))
+                {
+                    topK = Math.Clamp(k, 1, 50);
+                }
+                _ = RunVectorSearchAsync(query, topK, CancellationToken.None);
+                return true;
+            }
+
             return false;
         }
 
@@ -338,10 +410,38 @@ Keep responses concise and actionable. Show code examples when helpful."));
                     if (query != null)
                         SearchWorkspace(new[] { query, "--max", maxResults.ToString() });
                 }
+                else if (jsonCall.Contains("\"vector_search\""))
+                {
+                    var query = ExtractArgument(jsonCall, "query");
+                    var topK = int.TryParse(ExtractArgument(jsonCall, "top_k"), out var tk) ? tk : 8;
+                    if (!string.IsNullOrEmpty(query))
+                        await RunVectorSearchAsync(query!, Math.Clamp(topK, 1, 50), CancellationToken.None);
+                }
             }
             catch
             {
                 // Ignore function call errors
+            }
+        }
+
+        private async Task RunVectorSearchAsync(string query, int topK, CancellationToken token)
+        {
+            if (embeddingIndex.Count == 0)
+            {
+                append(" [index] empty. Run /embed build first.\n", Color.Yellow);
+                return;
+            }
+            var results = await embeddingIndex.SearchAsync(query, topK, token);
+            if (results.Count == 0)
+            {
+                append(" No semantic matches found.\n", Color.Gray);
+                return;
+            }
+            append($" Semantic results for: '{query}'\n", Color.Cyan);
+            foreach (var r in results)
+            {
+                append($"  {r.FilePath}:{r.StartLine}  score={r.Score:F3}\n", Color.LightGray);
+                append($"   {r.Preview}\n", Color.Gray);
             }
         }
 
