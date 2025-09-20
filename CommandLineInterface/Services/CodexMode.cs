@@ -5,13 +5,23 @@ namespace CommandLineInterface.Services
     public class CodexMode : ITerminalMode
     {
         private CodexSession? session;
+        private string? lastWorkspaceRoot;
 
         public string Name => "codex";
         public bool IsActive => session?.IsActive == true;
 
         public async Task EnterAsync(TerminalContext context)
         {
-            session = new CodexSession(context.CodexService, context.Append, context.GetWorkspaceRoot());
+            var currentWorkspace = context.GetWorkspaceRoot();
+            
+            // Create new session if workspace changed or no session exists
+            if (session == null || lastWorkspaceRoot != currentWorkspace)
+            {
+                session?.Stop(); // Stop existing session if any
+                session = new CodexSession(context.CodexService, context.Append, currentWorkspace, context.EmbeddingService);
+                lastWorkspaceRoot = currentWorkspace;
+            }
+            
             await session.StartAsync();
         }
 

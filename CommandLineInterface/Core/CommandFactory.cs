@@ -3,6 +3,7 @@ using CommandLineInterface.Commands.Utility;
 using CommandLineInterface.Commands.Fun;
 using CommandLineInterface.Commands.Network;
 using CommandLineInterface.Commands.Configuration;
+using CommandLineInterface.Commands;
 
 namespace CommandLineInterface.Core
 {
@@ -34,6 +35,7 @@ namespace CommandLineInterface.Core
             RegisterCommand(router, new QrCommand());
             RegisterCommand(router, new UuidCommand());
             RegisterCommand(router, new PasswordCommand());
+            RegisterCommand(router, new SearchCommand());
 
             // Network Commands
             RegisterCommand(router, new IpCommand());
@@ -88,7 +90,8 @@ namespace CommandLineInterface.Core
                     new AboutCommand(),
                     new VersionCommand(),
                     new CodeCommand(),
-                    new SystemInfoCommand()
+                    new SystemInfoCommand(),
+                    new CodexTerminalCommand()
                 },
                 ["Configuration"] = new List<ICommand>
                 {

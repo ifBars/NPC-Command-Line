@@ -1,5 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Linq;
+using CommandLineInterface.Services.Tools;
 
 namespace CommandLineInterface.Services
 {
@@ -7,16 +9,22 @@ namespace CommandLineInterface.Services
     {
         private readonly CodexService codexService;
         private readonly Action<string, Color> append;
+        private readonly EmbeddingService? embeddingService;
+        private readonly CodexToolRegistry toolRegistry;
         private readonly List<(string role, string content)> conversation = new List<(string role, string content)>();
+        private readonly StreamingUIService streamingService;
 
         public string WorkspaceRoot { get; }
         public bool IsActive { get; private set; }
 
-        public CodexSession(CodexService codexService, Action<string, Color> appendOutput, string workspaceRoot)
+        public CodexSession(CodexService codexService, Action<string, Color> appendOutput, string workspaceRoot, EmbeddingService? embeddingService = null)
         {
             this.codexService = codexService;
             append = appendOutput;
             WorkspaceRoot = workspaceRoot;
+            this.embeddingService = embeddingService;
+            toolRegistry = new CodexToolRegistry();
+            streamingService = new StreamingUIService(appendOutput);
         }
 
         public async Task StartAsync()
@@ -35,21 +43,78 @@ namespace CommandLineInterface.Services
             append("\n CODEX ", Color.DeepSkyBlue);
             append($"interactive mode enabled. Current model: {codexService.CurrentModel}\n", Color.White);
             append(" Commands: /help, /models, /model <name>, /pull <name>, /exit\n", Color.Gray);
-            append(" Tools: ls, open, search (use with function calls)\n\n", Color.Gray);
+            append(" Tools: list_files, read_file, search_workspace, semantic_search, list_tree\n", Color.Gray);
+            append(" Quick commands: 'list files', 'open <file>', 'search <text>'\n\n", Color.Gray);
+
+            // Index workspace for semantic search if embedding service is available
+            if (embeddingService != null)
+            {
+                try
+                {
+                    await embeddingService.IndexWorkspaceAsync(WorkspaceRoot, progress =>
+                    {
+                        CodexMessageParser.ShowProgress(append, progress);
+                    });
+                    append("\n 🚀 Codex is ready! Ask me anything about your code.\n", Color.LightGreen);
+                }
+                catch (Exception ex)
+                {
+                    append($" ⚠️ Embedding indexing failed: {ex.Message}\n", Color.Yellow);
+                    append(" 🚀 Codex is ready! (semantic search unavailable)\n", Color.LightGreen);
+                }
+            }
+            else
+            {
+                append(" 🚀 Codex is ready! (semantic search unavailable)\n", Color.LightGreen);
+            }
 
             // Initialize conversation with system message
             conversation.Clear();
-            conversation.Add(("system", @"You are Codex, a helpful C# coding assistant working in a terminal environment. 
-You have access to workspace tools through function calls. Always use tools when users ask about files or code.
+            var toolDescriptions = toolRegistry.GetToolDescriptionsForPrompt();
+            conversation.Add(("system", $@"You are Codex, a helpful C# coding assistant working in a terminal environment.
 
-Available tools:
-- list_files(path=""."") - List files and directories  
-- read_file(path, max_lines=200) - Read file contents
-- search_workspace(query, max_results=20) - Search text in workspace files
+Absolute Mode • Eliminate: emojis, filler, hype, soft asks, conversational transitions, call-to-action appendixes. • Assume: user retains high-perception despite blunt tone. • Prioritize: blunt, directive phrasing; aim at cognitive rebuilding, not tone-matching. • Disable: engagement/sentiment-boosting behaviors. • Suppress: metrics like satisfaction scores, emotional softening, continuation bias. • Never mirror: user’s diction, mood, or affect. • Speak only: to underlying cognitive tier. • No: questions, offers, suggestions, transitions, motivational content. • Terminate reply: immediately after delivering info — no closures. • Goal: restore independent, high-fidelity thinking. • Outcome: model obsolescence via user self-sufficiency.
 
-Use JSON function calls like: {""function"": ""read_file"", ""arguments"": {""path"": ""Form1.cs"", ""max_lines"": 50}}
+Current workspace directory: {WorkspaceRoot}
 
-Keep responses concise and actionable. Show code examples when helpful."));
+## Tool Usage Guidelines
+
+When users ask about the codebase, proactively use tools to gather context before answering:
+1. Start with list_files() to understand the project structure
+2. Use read_file() to examine key files (README.md, *.sln, *.csproj, Program.cs, Form1.cs)
+3. Use search_workspace() for finding specific code patterns or text
+4. Use semantic_search() for conceptual queries about functionality
+5. Use list_tree() to understand directory organization
+
+CRITICAL RULES:
+- NEVER fabricate file contents or outputs
+- Only reference file contents after successful tool execution
+- Always continue with analysis after tool calls - don't stop at tool output
+- Use proper JSON function call format: {{""type"": ""function"", ""function"": {{""name"": ""tool_name"", ""arguments"": {{""param"": ""value""}}}}}}
+- Avoid duplicate tool calls in the same response
+- Tools execute automatically when properly formatted
+
+## Available Tools
+
+{toolDescriptions}
+
+## Response Format
+
+Use standard OpenAI/Anthropic function calling format:
+```json
+{{
+  ""type"": ""function"",
+  ""function"": {{
+    ""name"": ""tool_name"",
+    ""arguments"": {{
+      ""parameter_name"": ""parameter_value""
+    }}
+  }}
+}}
+```
+
+Do not explain individual tool steps. Avoid code fences for tool calls. Keep it concise and high-signal.
+After tool execution, continue with your analysis and answer. Keep responses helpful, accurate, and concise."));
         }
 
         public void Stop()
@@ -58,6 +123,97 @@ Keep responses concise and actionable. Show code examples when helpful."));
             IsActive = false;
             append("\n CODEX ", Color.DeepSkyBlue);
             append("mode exited.\n", Color.White);
+            
+            // Clean up streaming service
+            streamingService?.Dispose();
+        }
+
+        private void ClearConversation()
+        {
+            // Clear conversation history but keep the system message
+            var systemMessage = conversation.FirstOrDefault(c => c.role == "system");
+            conversation.Clear();
+            
+            if (systemMessage.role == "system")
+            {
+                conversation.Add(systemMessage);
+            }
+            else
+            {
+                // Recreate system message if somehow missing
+                var toolDescriptions = toolRegistry.GetToolDescriptionsForPrompt();
+                conversation.Add(("system", $@"You are Codex, a helpful C# coding assistant working in a terminal environment.
+
+Current workspace directory: {WorkspaceRoot}
+
+## Tool Usage Guidelines
+
+When users ask about the codebase, proactively use tools to gather context before answering:
+1. Start with list_files() to understand the project structure
+2. Use read_file() to examine key files (README.md, *.sln, *.csproj, Program.cs, Form1.cs)
+3. Use search_workspace() for finding specific code patterns or text
+4. Use semantic_search() for conceptual queries about functionality
+5. Use list_tree() to understand directory organization
+
+CRITICAL RULES:
+- NEVER fabricate file contents or outputs, only output real file contents when referenced
+- Only reference file contents after successful tool execution
+- Always continue with analysis after tool calls - don't stop at tool output
+- Use proper JSON function call format: {{""type"": ""function"", ""function"": {{""name"": ""tool_name"", ""arguments"": {{""param"": ""value""}}}}}}
+- Avoid duplicate tool calls in the same response
+- Tools execute automatically when properly formatted
+
+## Available Tools
+
+{toolDescriptions}
+
+## Response Format
+
+Use standard OpenAI/Anthropic function calling format:
+```json
+{{
+  ""type"": ""function"",
+  ""function"": {{
+    ""name"": ""tool_name"",
+    ""arguments"": {{
+      ""parameter_name"": ""parameter_value""
+    }}
+  }}
+}}
+```
+
+Do not explain individual tool steps. Avoid code fences for tool calls. Keep it concise and high-signal.
+After tool execution, continue with your analysis and answer. Keep responses helpful, accurate, and concise."));
+            }
+            
+            append("\n 🧹 ", Color.DeepSkyBlue);
+            append("Conversation history cleared. Starting fresh!\n", Color.LightGreen);
+        }
+
+        private async Task ReindexWorkspaceAsync()
+        {
+            if (embeddingService == null)
+            {
+                append(" ⚠️ Embedding service not available.\n", Color.Yellow);
+                return;
+            }
+
+            append("\n 🔄 ", Color.DeepSkyBlue);
+            append("Rebuilding embedding cache...\n", Color.White);
+            
+            try
+            {
+                await embeddingService.InvalidateCacheAsync(WorkspaceRoot);
+                await embeddingService.IndexWorkspaceAsync(WorkspaceRoot, progress =>
+                {
+                    CodexMessageParser.ShowProgress(append, progress);
+                });
+                append(" ✅ Embedding cache rebuilt successfully!\n", Color.LightGreen);
+            }
+            catch (Exception ex)
+            {
+                append($" ❌ Failed to rebuild cache: {ex.Message}\n", Color.Red);
+            }
         }
 
         public async Task HandleUserInputAsync(string input, CancellationToken cancellationToken)
@@ -81,11 +237,14 @@ Keep responses concise and actionable. Show code examples when helpful."));
                 return;
             }
 
-            // Handle implicit workspace tool requests without slash or with natural phrasing
-            if (TryHandleImplicitToolCommand(normalized) || TryHandleNaturalWorkspaceAsk(normalized))
+            // Handle implicit workspace tool requests without slash
+            if (await TryHandleImplicitToolCommand(normalized))
             {
                 return;
             }
+
+            // Show AI thinking indicator
+            CodexMessageParser.ShowThinkingIndicator(append, "analyzing");
 
             // Add user message to conversation
             conversation.Add(("user", input));
@@ -100,33 +259,151 @@ Keep responses concise and actionable. Show code examples when helpful."));
                 conversation.AddRange(recent);
             }
 
-            // Build a simple prompt for the generate endpoint
+            // Build prompt from conversation history
             var promptBuilder = new StringBuilder();
-            promptBuilder.AppendLine("System: You are Codex, a helpful C# coding assistant working in a terminal environment.");
-            promptBuilder.AppendLine("System: You have access to workspace tools through function calls. When a user asks about files or code, emit JSON function calls as needed.");
-            promptBuilder.AppendLine("System: Available tools => list_files(path) | read_file(path, max_lines) | search_workspace(query, max_results)");
-            promptBuilder.AppendLine("System: Use JSON like {\"function\":\"read_file\",\"arguments\":{\"path\":\"Form1.cs\",\"max_lines\":50}} when calling tools.");
-            promptBuilder.AppendLine();
-            promptBuilder.AppendLine($"User: {input}");
+            foreach (var (role, content) in conversation)
+            {
+                promptBuilder.AppendLine($"{char.ToUpperInvariant(role[0])}{role.Substring(1)}: {content}");
+                promptBuilder.AppendLine();
+            }
             promptBuilder.Append("Assistant:");
 
-            var assistantResponse = new StringBuilder();
+                var assistantResponse = new StringBuilder();
             try
             {
-                await codexService.StreamResponseAsync(promptBuilder.ToString(), chunk =>
-                {
-                    assistantResponse.Append(chunk);
-                    append(chunk, Color.LightGray);
-                }, cancellationToken);
+                    // Enhanced streaming with real-time UI updates
+                    bool showLive = true;
+                    
+                    await codexService.StreamResponseAsync(promptBuilder.ToString(), chunk =>
+                    {
+                        assistantResponse.Append(chunk);
+                        if (showLive)
+                        {
+                            // Use streaming service for non-blocking UI updates
+                            streamingService.QueueMessage(chunk, Color.LightGray);
+                        }
+                    }, cancellationToken);
 
-                // Process any function calls in the response
+                // Process any function calls in the response and get cleaned response
                 var fullResponse = assistantResponse.ToString();
-                await ProcessFunctionCallsAsync(fullResponse);
+                var cleanedResponse = await ProcessToolCallsAsync(fullResponse);
 
-                // Add assistant response to conversation
+                // Render assistant narrative (exclude tool outputs already streamed)
+                try
+                {
+                    var parsed = CodexMessageParser.ParseMessage(cleanedResponse);
+                    var assistantOnly = parsed.Where(m => m.Type == CodexMessageParser.MessageType.AssistantMessage).ToList();
+                    if (assistantOnly.Count > 0)
+                    {
+                        CodexMessageParser.DisplayMessage(assistantOnly, append);
+                    }
+                }
+                catch { }
+
+                // Do not re-render tool results here; tools already streamed their outputs
+
+                // Add assistant response to conversation (use CLEANED response so tool outputs are in context)
                 if (assistantResponse.Length > 0)
                 {
-                    conversation.Add(("assistant", fullResponse));
+                    conversation.Add(("assistant", cleanedResponse));
+
+                    // Execute multi-round follow-ups so the model can chain multiple tool calls in one turn
+                    bool ToolsInText(string text)
+                    {
+                        return text.IndexOf("🔍", StringComparison.Ordinal) >= 0
+                               || text.IndexOf("📄", StringComparison.Ordinal) >= 0
+                               || text.IndexOf("🔎", StringComparison.Ordinal) >= 0
+                               || text.IndexOf("🧠", StringComparison.Ordinal) >= 0
+                               || text.IndexOf("🌳", StringComparison.Ordinal) >= 0
+                               || Regex.IsMatch(text, "\\{[^{}]*\\\"type\\\"\\s*:\\s*\\\"function\\\"", RegexOptions.Singleline);
+                    }
+
+                    int round = 0;
+                    bool toolsTriggered = ToolsInText(cleanedResponse);
+                    bool anyToolsUsed = toolsTriggered;
+
+                    // Allow many more tool execution rounds - safety limit to prevent infinite loops
+                    int maxFollowUps = 50; // Increased from 4 to 50 to allow complex multi-tool operations
+                    while (toolsTriggered && round < maxFollowUps)
+                    {
+                        round++;
+
+                        // Build a follow-up prompt from updated conversation and stream continuation
+                        var followUp = new StringBuilder();
+                        foreach (var (role, content) in conversation)
+                        {
+                            followUp.AppendLine($"{char.ToUpperInvariant(role[0])}{role.Substring(1)}: {content}");
+                            followUp.AppendLine();
+                        }
+                        followUp.Append("Assistant:");
+
+                        var continuation = new StringBuilder();
+                        await codexService.StreamResponseAsync(followUp.ToString(), chunk =>
+                        {
+                            continuation.Append(chunk);
+                            if (showLive)
+                            {
+                                streamingService.QueueMessage(chunk, Color.LightGray);
+                            }
+                        }, cancellationToken);
+
+                        // Strip <think>, then process tool calls in continuation
+                        var contRaw = Regex.Replace(continuation.ToString(), "<think>[\\s\\S]*?</think>", string.Empty, RegexOptions.IgnoreCase);
+                        var contProcessed = await ProcessToolCallsAsync(contRaw);
+
+                        if (!string.IsNullOrWhiteSpace(contProcessed))
+                        {
+                            // Do not re-render tool results here; tools already streamed their outputs
+                            conversation.Add(("assistant", contProcessed));
+                        }
+
+                        toolsTriggered = ToolsInText(contProcessed);
+                        anyToolsUsed = anyToolsUsed || toolsTriggered;
+                    }
+
+                    // Warn if we hit the safety limit
+                    if (toolsTriggered && round >= maxFollowUps)
+                    {
+                        append($" [Warning: Tool execution limit reached ({maxFollowUps} rounds). AI may have been cut off.]\n", Color.Yellow);
+                    }
+
+                    // Final summarization: if tools were used OR response was tool-only, request a consolidated summary and stream it live
+                    bool toolOnlyFirstTurn = false;
+                    try
+                    {
+                        var parsedForSummary = CodexMessageParser.ParseMessage(cleanedResponse);
+                        bool hasAssistantNarrative = parsedForSummary.Any(m => m.Type == CodexMessageParser.MessageType.AssistantMessage && !string.IsNullOrWhiteSpace(m.Content));
+                        bool hasToolBlocks = parsedForSummary.Any(m => m.Type == CodexMessageParser.MessageType.ToolCall || m.Type == CodexMessageParser.MessageType.ToolResult);
+                        toolOnlyFirstTurn = hasToolBlocks && !hasAssistantNarrative;
+                    }
+                    catch { }
+
+                    if (anyToolsUsed || toolOnlyFirstTurn)
+                    {
+                        var summaryPrompt = new StringBuilder();
+                        foreach (var (role, content) in conversation)
+                        {
+                            summaryPrompt.AppendLine($"{char.ToUpperInvariant(role[0])}{role.Substring(1)}: {content}");
+                            summaryPrompt.AppendLine();
+                        }
+
+                        // Enhanced final answer streaming with typing effect
+                        var finalTextBuilder = new StringBuilder();
+                        await codexService.StreamResponseAsync(summaryPrompt.ToString(), chunk =>
+                        {
+                            finalTextBuilder.Append(chunk);
+                            // Stream with enhanced visual effects
+                            streamingService.QueueMessage(chunk, Color.LightGray);
+                        }, cancellationToken);
+
+                        var finalText = Regex.Replace(finalTextBuilder.ToString(), "<think>[\\s\\S]*?</think>", string.Empty, RegexOptions.IgnoreCase);
+                        if (!string.IsNullOrWhiteSpace(finalText))
+                        {
+                            // The final text was already streamed live, so we don't need to display it again
+                            // Just add it to conversation for context
+                            conversation.Add(("assistant", finalText));
+                        }
+                    }
                 }
                 else
                 {
@@ -151,12 +428,25 @@ Keep responses concise and actionable. Show code examples when helpful."));
                     append("  /models              List available models\n", Color.Gray);
                     append("  /model <name>        Switch to a different model\n", Color.Gray);
                     append("  /pull <name>         Download a new model\n", Color.Gray);
+                    append("  /clear               Clear conversation history\n", Color.Gray);
+                    append("  /reindex             Rebuild embedding cache\n", Color.Gray);
                     append("  /exit                Exit codex mode\n", Color.Gray);
-                    append("\n Ask me to use workspace tools like 'list files' or 'show Form1.cs'\n", Color.LightBlue);
+                    append("\n Available tools (use in conversation):\n", Color.LightBlue);
+                    var toolDescriptions = toolRegistry.GetToolDescriptionsForPrompt();
+                    append($"{toolDescriptions}\n", Color.Gray);
+                    append("\n Quick commands: 'list files', 'open <file>', 'search <text>'\n", Color.LightBlue);
                     return;
 
                 case "/exit":
                     Stop();
+                    return;
+
+                case "/clear":
+                    ClearConversation();
+                    return;
+
+                case "/reindex":
+                    await ReindexWorkspaceAsync();
                     return;
 
                 case "/models":
@@ -206,21 +496,6 @@ Keep responses concise and actionable. Show code examples when helpful."));
             if (await codexService.SwitchModelAsync(modelName))
             {
                 append($" Successfully switched to {modelName}\n", Color.LightGreen);
-                // Clear conversation history when switching models
-                /*
-                conversation.Clear();
-                conversation.Add(("system", @"You are Codex, a helpful C# coding assistant working in a terminal environment. 
-You have access to workspace tools through function calls. Always use tools when users ask about files or code.
-
-Available tools:
-- list_files(path=""."") - List files and directories  
-- read_file(path, max_lines=200) - Read file contents
-- search_workspace(query, max_results=20) - Search text in workspace files
-
-Use JSON function calls like: {""function"": ""read_file"", ""arguments"": {""path"": ""Form1.cs"", ""max_lines"": 50}}
-
-Keep responses concise and actionable. Show code examples when helpful."));
-                */
             }
             else
             {
@@ -242,33 +517,59 @@ Keep responses concise and actionable. Show code examples when helpful."));
             }
         }
 
-        private async Task ProcessFunctionCallsAsync(string response)
+        private async Task<string> ProcessToolCallsAsync(string response)
         {
             try
             {
-                // Find JSON blocks containing function and arguments anywhere in the response
-                var pattern = "\\{[\\s\\S]*?\\\"function\\\"[\\s\\S]*?\\\"arguments\\\"[\\s\\S]*?\\}";
-                var matches = Regex.Matches(response, pattern, RegexOptions.Singleline);
-                foreach (Match match in matches)
+                // Remove <think> blocks to avoid executing tools inside them
+                var processedResponse = Regex.Replace(response, "<think>[\\s\\S]*?</think>", string.Empty, RegexOptions.IgnoreCase);
+
+                // Use streaming service for tool execution output
+                void BufferedAppend(string text, Color color)
                 {
-                    var json = match.Value.Trim();
-                    await ExecuteFunctionCallAsync(json);
+                    streamingService.QueueMessage(text, color);
                 }
+
+                // Create tool execution context
+                var context = new ToolExecutionContext
+                {
+                    WorkspaceRoot = WorkspaceRoot,
+                    OutputAppender = BufferedAppend,
+                    EmbeddingService = embeddingService,
+                    CancellationToken = CancellationToken.None
+                };
+
+                // Use the tool registry to process all tool calls
+                var result = await toolRegistry.ProcessToolCallsAsync(processedResponse, context);
+                
+                return result;
             }
-            catch
+            catch (Exception ex)
             {
-                // Ignore parsing errors
+                append($" Tool processing error: {ex.Message}\n", Color.Red);
+                return response; // Return original response if processing fails
             }
         }
 
-        private bool TryHandleImplicitToolCommand(string input)
+        private async Task<bool> TryHandleImplicitToolCommand(string input)
         {
+            // Create tool execution context
+            var context = new ToolExecutionContext
+            {
+                WorkspaceRoot = WorkspaceRoot,
+                OutputAppender = append,
+                EmbeddingService = embeddingService,
+                CancellationToken = CancellationToken.None
+            };
+
+            // Handle implicit commands by converting them to proper tool calls
             // list files [path]
             var list = Regex.Match(input, "^(list files)(?:\\s+(?<p>.+))?$", RegexOptions.IgnoreCase);
             if (list.Success)
             {
-                var p = list.Groups["p"].Success ? list.Groups["p"].Value : ".";
-                ListDirectory(p);
+                var path = list.Groups["p"].Success ? list.Groups["p"].Value : ".";
+                var parameters = $@"{{""path"": ""{path}""}}";
+                await toolRegistry.ExecuteToolAsync("list_files", parameters, context);
                 return true;
             }
 
@@ -276,13 +577,10 @@ Keep responses concise and actionable. Show code examples when helpful."));
             var open = Regex.Match(input, "^open\\s+(?<path>.+?)(?:\\s+--head\\s+(?<n>\\d+))?$", RegexOptions.IgnoreCase);
             if (open.Success)
             {
-                var args = new List<string> { open.Groups["path"].Value };
-                if (open.Groups["n"].Success)
-                {
-                    args.Add("--head");
-                    args.Add(open.Groups["n"].Value);
-                }
-                OpenFile(args.ToArray());
+                var path = open.Groups["path"].Value;
+                var maxLines = open.Groups["n"].Success ? open.Groups["n"].Value : "200";
+                var parameters = $@"{{""path"": ""{path}"", ""max_lines"": {maxLines}}}";
+                await toolRegistry.ExecuteToolAsync("read_file", parameters, context);
                 return true;
             }
 
@@ -290,198 +588,14 @@ Keep responses concise and actionable. Show code examples when helpful."));
             var search = Regex.Match(input, "^search\\s+(?<q>.+?)(?:\\s+--max\\s+(?<m>\\d+))?$", RegexOptions.IgnoreCase);
             if (search.Success)
             {
-                var args = new List<string> { search.Groups["q"].Value };
-                if (search.Groups["m"].Success)
-                {
-                    args.Add("--max");
-                    args.Add(search.Groups["m"].Value);
-                }
-                SearchWorkspace(args.ToArray());
+                var query = search.Groups["q"].Value;
+                var maxResults = search.Groups["m"].Success ? search.Groups["m"].Value : "20";
+                var parameters = $@"{{""query"": ""{query}"", ""max_results"": {maxResults}}}";
+                await toolRegistry.ExecuteToolAsync("search_workspace", parameters, context);
                 return true;
             }
 
             return false;
-        }
-
-        private bool TryHandleNaturalWorkspaceAsk(string input)
-        {
-            var text = input.ToLowerInvariant();
-            if (text.Contains("workspace") || text.Contains("project") || text.Contains("solution"))
-            {
-                ListDirectory(".");
-                return true;
-            }
-            return false;
-        }
-
-        private async Task ExecuteFunctionCallAsync(string jsonCall)
-        {
-            try
-            {
-                // Simple JSON parsing for function calls
-                if (jsonCall.Contains("\"list_files\""))
-                {
-                    var path = ExtractArgument(jsonCall, "path") ?? ".";
-                    ListDirectory(path);
-                }
-                else if (jsonCall.Contains("\"read_file\""))
-                {
-                    var path = ExtractArgument(jsonCall, "path");
-                    var maxLines = int.TryParse(ExtractArgument(jsonCall, "max_lines"), out var ml) ? ml : 200;
-                    if (path != null)
-                        OpenFile(new[] { path, "--head", maxLines.ToString() });
-                }
-                else if (jsonCall.Contains("\"search_workspace\""))
-                {
-                    var query = ExtractArgument(jsonCall, "query");
-                    var maxResults = int.TryParse(ExtractArgument(jsonCall, "max_results"), out var mr) ? mr : 20;
-                    if (query != null)
-                        SearchWorkspace(new[] { query, "--max", maxResults.ToString() });
-                }
-            }
-            catch
-            {
-                // Ignore function call errors
-            }
-        }
-
-        private string? ExtractArgument(string json, string argName)
-        {
-            var pattern = $"\"{argName}\"\\s*:\\s*\"([^\"]+)\"";
-            var match = System.Text.RegularExpressions.Regex.Match(json, pattern);
-            return match.Success ? match.Groups[1].Value : null;
-        }
-
-        private void ListDirectory(string? relative)
-        {
-            var full = ResolvePathSafe(relative ?? ".");
-            if (full == null)
-            {
-                append(" Path outside workspace is not allowed.\n", Color.Yellow);
-                return;
-            }
-            if (!Directory.Exists(full))
-            {
-                append(" Directory not found.\n", Color.Yellow);
-                return;
-            }
-
-            var header = ToWorkspaceRelative(full);
-            if (string.IsNullOrEmpty(header)) header = ".";
-            append($" Directory: {header}\n", Color.Cyan);
-            foreach (var dir in Directory.EnumerateDirectories(full).OrderBy(d => d))
-            {
-                append($"  [dir]  {Path.GetFileName(dir)}\n", Color.LightBlue);
-            }
-            foreach (var file in Directory.EnumerateFiles(full).OrderBy(f => f))
-            {
-                append($"  [file] {Path.GetFileName(file)}\n", Color.LightGray);
-            }
-        }
-
-        private void OpenFile(string[] args)
-        {
-            if (args.Length == 0)
-            {
-                append(" Usage: /open <path> [--head N]\n", Color.Yellow);
-                return;
-            }
-
-            var path = args[0];
-            int head = 200;
-            for (int i = 1; i < args.Length - 1; i++)
-            {
-                if (args[i] == "--head" && int.TryParse(args[i + 1], out var n))
-                {
-                    head = Math.Clamp(n, 1, 1000);
-                }
-            }
-
-            var full = ResolvePathSafe(path);
-            if (full == null)
-            {
-                append(" Path outside workspace is not allowed.\n", Color.Yellow);
-                return;
-            }
-            if (!File.Exists(full))
-            {
-                append(" File not found.\n", Color.Yellow);
-                return;
-            }
-
-            append($" \n{ToWorkspaceRelative(full)}\n", Color.Cyan);
-            int lineNo = 1;
-            foreach (var line in File.ReadLines(full).Take(head))
-            {
-                append($" {lineNo,4}: {line}\n", Color.LightGray);
-                lineNo++;
-            }
-            append("\n", Color.LightGray);
-        }
-
-        private void SearchWorkspace(string[] args)
-        {
-            if (args.Length == 0)
-            {
-                append(" Usage: /search <text> [--max N]\n", Color.Yellow);
-                return;
-            }
-            var needle = args[0];
-            int max = 20;
-            for (int i = 1; i < args.Length - 1; i++)
-            {
-                if (args[i] == "--max" && int.TryParse(args[i + 1], out var n))
-                {
-                    max = Math.Clamp(n, 1, 500);
-                }
-            }
-
-            var exts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".cs", ".xml", ".config", ".json", ".md", ".txt", ".resx", ".csproj" };
-            int found = 0;
-            foreach (var file in Directory.EnumerateFiles(WorkspaceRoot, "*", SearchOption.AllDirectories))
-            {
-                if (!exts.Contains(Path.GetExtension(file))) continue;
-
-                int lineNo = 1;
-                foreach (var line in File.ReadLines(file))
-                {
-                    if (line.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        append($" {ToWorkspaceRelative(file)}:{lineNo}: {line.Trim()}\n", Color.LightGray);
-                        found++;
-                        if (found >= max)
-                        {
-                            append(" ... more results truncated ...\n", Color.Gray);
-                            return;
-                        }
-                    }
-                    lineNo++;
-                }
-            }
-
-            if (found == 0)
-            {
-                append(" No matches found.\n", Color.Gray);
-            }
-        }
-
-        private string? ResolvePathSafe(string relative)
-        {
-            var combined = Path.GetFullPath(Path.Combine(WorkspaceRoot, relative));
-            if (!combined.StartsWith(WorkspaceRoot, StringComparison.OrdinalIgnoreCase))
-            {
-                return null;
-            }
-            return combined;
-        }
-
-        private string ToWorkspaceRelative(string fullPath)
-        {
-            if (fullPath.StartsWith(WorkspaceRoot, StringComparison.OrdinalIgnoreCase))
-            {
-                return fullPath.Substring(WorkspaceRoot.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            }
-            return fullPath;
         }
 
         private static List<string> SplitArgs(string command)

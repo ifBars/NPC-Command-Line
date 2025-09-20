@@ -43,11 +43,13 @@ namespace CommandLineInterface
             try
             {
                 var codexService = new Services.CodexService(new Uri("http://localhost:11434/"), "gpt-oss:20b");
+                var embeddingService = new Services.EmbeddingService(new Uri("http://localhost:11434/"));
                 TerminalContext = new CommandLineInterface.Core.TerminalContext
                 {
                     Append = AppendSafe,
                     GetWorkspaceRoot = GetWorkspaceRoot,
                     CodexService = codexService,
+                    EmbeddingService = embeddingService,
                     Form = this
                 };
                 
@@ -147,7 +149,7 @@ namespace CommandLineInterface
             richTextBox1.SelectionColor = richTextBox1.ForeColor;
         }
 
-        private async void ExecuteCommand(string Command)
+        private async Task ExecuteCommand(string Command)
         {
             //Resources used:
             //powershellcommands.com/execute-powershell-script-from-c
@@ -351,11 +353,29 @@ namespace CommandLineInterface
         {
             if (InvokeRequired)
             {
-                BeginInvoke(new Action(() => AppendColoredText(text, color)));
+                // Use BeginInvoke for non-blocking UI updates
+                BeginInvoke(new Action(() => 
+                {
+                    try
+                    {
+                        AppendColoredText(text, color);
+                    }
+                    catch
+                    {
+                        // Ignore UI update errors if form is disposed
+                    }
+                }));
             }
             else
             {
-                AppendColoredText(text, color);
+                try
+                {
+                    AppendColoredText(text, color);
+                }
+                catch
+                {
+                    // Ignore UI update errors if form is disposed
+                }
             }
         }
 
@@ -381,7 +401,7 @@ namespace CommandLineInterface
         {
             try
             {
-                var dir = new DirectoryInfo(Application.StartupPath);
+                var dir = new DirectoryInfo(CurrentDirectory);
                 for (var current = dir; current != null; current = current.Parent)
                 {
                     // Prefer solution root
@@ -395,7 +415,7 @@ namespace CommandLineInterface
             }
             catch
             {
-                return Application.StartupPath;
+                return CurrentDirectory;
             }
         }
 
@@ -458,7 +478,7 @@ namespace CommandLineInterface
                     return;
                 }
 
-                ExecuteCommand(Command);
+                _ = Task.Run(async () => await ExecuteCommand(Command));
             }
         }
 
